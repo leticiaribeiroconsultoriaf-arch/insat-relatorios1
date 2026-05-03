@@ -1,0 +1,6 @@
+{
+  "name": "Gerador de Relatórios INSAT ",
+  "description": "Sistema profissional para geração automática de relatórios técnicos com gráficos de radar baseados em dados do Excel.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
