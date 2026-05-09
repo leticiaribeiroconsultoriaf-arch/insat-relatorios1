@@ -1354,7 +1354,7 @@ export default function App() {
         
         addLog(`>> Base: ${vEmpresaRaw} | Setor: ${vSetorRaw}`);
 
-        let rawD = sheet['K18']?.v || sheet['K16']?.v || getValSmart(["DATA", "DATA DA COLETA", "ATUALIZADO EM"]);
+        let rawD = sheet['K18']?.v || sheet['K16']?.v || getValSmart(["DATA DA AVALIAÇÃO", "DATA DA AVALIACAO", "DATA DA COLETA", "DATA", "ATUALIZADO EM"]);
         let d = new Date();
         if (rawD instanceof Date) {
           d = rawD;
@@ -1362,10 +1362,23 @@ export default function App() {
           // Excel serial number
           d = new Date(Math.round((rawD - 25569) * 86400 * 1000));
         } else if (rawD) {
-          const parsed = Date.parse(String(rawD));
-          if (!isNaN(parsed)) d = new Date(parsed);
+          // Try regex to find date patterns in string (e.g. "São Paulo, 10 de maio de 2024" or "10/05/2024")
+          const dateStr = String(rawD);
+          const ddmmyyyy = dateStr.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+          if (ddmmyyyy) {
+            const day = parseInt(ddmmyyyy[1]);
+            const month = parseInt(ddmmyyyy[2]) - 1;
+            let year = parseInt(ddmmyyyy[3]);
+            if (year < 100) year += 2000;
+            d = new Date(year, month, day);
+          } else {
+            const parsed = Date.parse(dateStr);
+            if (!isNaN(parsed)) d = new Date(parsed);
+          }
         }
-        if (!d || d.getFullYear() < 1920) d = new Date(); 
+        
+        // Final verification for d
+        if (!d || isNaN(d.getTime()) || d.getFullYear() < 1920) d = new Date(); 
 
         // --- Demografia ---
         const fTot = smartParse(sheet['L16']?.v || getValSmart(["TOTAL DE FUNCIONÁRIOS", "FUNC. TOTAL", "EFETIVOS"], 'number'));
@@ -1398,14 +1411,19 @@ export default function App() {
           }
         }
         
-        const pPartic = fTot > 0 ? (pTot / fTot * 100) : 0;
+        const pParticLimit = fTot > 0 ? (pTot / fTot * 100) : 0;
         const totalGenero = mN + wN;
+        
+        // Sync participation if genres sum is higher
+        const finalPTot = (pTot === 0 && totalGenero > 0) ? totalGenero : pTot;
+        const finalPPartic = fTot > 0 ? (finalPTot / fTot * 100) : 0;
+
         const pMasc = totalGenero > 0 ? (mN / totalGenero * 100) : 0;
         const pFem = totalGenero > 0 ? (wN / totalGenero * 100) : 0;
         
-        addLog(`>> Demografia: ${pTot}/${fTot} part., M:${mN}, F:${wN}`);
-        if (totalGenero !== pTot && pTot > 0 && totalGenero > 0) {
-          addLog(`⚠️ Divergência: Gêneros (${totalGenero}) ≠ Total Participantes (${pTot})`);
+        addLog(`>> Demografia: ${finalPTot}/${fTot} part., M:${mN}, F:${wN}`);
+        if (totalGenero !== finalPTot && finalPTot > 0 && totalGenero > 0) {
+          addLog(`⚠️ Divergência: Gêneros (${totalGenero}) ≠ Total Participantes (${finalPTot})`);
         }
 
     // --- Exposição Variables (Fórmulas do Excel) ---
@@ -1732,10 +1750,10 @@ export default function App() {
           DATA: dateStr,
           AVALIADOR: vAvaliadorRaw || "NÃO IDENTIFICADO",
           FUNC_TOTAL: Math.round(fTot),
-          PARTIC_TOTAL: Math.round(pTot),
+          PARTIC_TOTAL: Math.round(finalPTot),
           MASC_N: Math.round(mN),
           FEM_N: Math.round(wN),
-          PERC_PARTIC: formatPerc(pPartic)
+          PERC_PARTIC: formatPerc(finalPPartic)
         };
 
         const headerImageB64 = await generateHeaderBase64(tempReportData);
@@ -1759,12 +1777,12 @@ export default function App() {
           
           // Demografia
           FUNC_TOTAL: Math.round(fTot),
-          PARTIC_TOTAL: Math.round(pTot),
+          PARTIC_TOTAL: Math.round(finalPTot),
           MASC_N: Math.round(mN),
           FEM_N: Math.round(wN),
-          PERC_PARTIC: formatPerc(pPartic), 
-          SOMA_P16: formatPerc(pPartic),
-          PERC_EFETIVOS: formatPerc(pPartic),
+          PERC_PARTIC: formatPerc(finalPPartic), 
+          SOMA_P16: formatPerc(finalPPartic),
+          PERC_EFETIVOS: formatPerc(finalPPartic),
           PERC_MASC: Math.round(pMasc) + "%",
           PERC_FEM: Math.round(pFem) + "%",
           
