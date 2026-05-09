@@ -1,6 +1,6 @@
 {
-  "name": "Gerador de Relatórios INSAT ",
-  "description": "Sistema profissional para geração automática de relatórios técnicos com gráficos de radar baseados em dados do Excel.",
+  "name": "Gerador de Relatório Psicossocial",
+  "description": "Sistema profissional para geração de relatórios psicossociais com gráficos automatizados e matriz de risco.",
   "requestFramePermissions": [],
   "majorCapabilities": []
 }
