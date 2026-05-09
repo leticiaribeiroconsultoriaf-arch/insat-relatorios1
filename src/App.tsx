@@ -331,6 +331,7 @@ export default function App() {
   const [excels, setExcels] = useState<BufferedFile[]>([]);
   const [includePlano, setIncludePlano] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [processingStatus, setProcessingStatus] = useState<{name: string, status: 'waiting' | 'processing' | 'completed' | 'error'}[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [dragActive, setDragActive] = useState<{ [key: string]: boolean }>({});
   const [modoGeracao, setModoGeracao] = useState<'individual' | 'consolidado'>('individual');
@@ -368,14 +369,18 @@ export default function App() {
   const logEndRef = useRef<HTMLDivElement>(null);
   const chartInstance = useRef<Chart | null>(null);
 
-  // Auto-scroll log
-  useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [logs]);
+  // Auto-scroll log disabled by user request
+  // useEffect(() => {
+  //   logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  // }, [logs]);
 
   const addLog = (message: string) => {
     const timestamp = new Date().toLocaleTimeString();
     setLogs(prev => [...prev, { id: Math.random().toString(36).substr(2, 9), message, timestamp }]);
+  };
+
+  const clearLogs = () => {
+    setLogs([]);
   };
 
   const handleDrag = (e: React.DragEvent, id: string, active: boolean) => {
@@ -1016,20 +1021,22 @@ export default function App() {
         type: 'radar',
         data: {
           labels: labels.map(l => {
-             const clean = l.replace(/^\d+[\s.-]*/, "").trim();
-             if (clean.length > 22) {
+             // Remove leading numbers/question identifiers (e.g. "Questão 1 - ", "1. ", etc)
+             let clean = l.replace(/^\d+[\s.-]*/, "").replace(/^Questão\s+\d+[\s.-]*/i, "").trim();
+             
+             if (clean.length > 25) {
                 const words = clean.split(' ');
                 const lines = [];
                 let current = "";
                 words.forEach(w => {
-                  if ((current + w).length > 20) {
+                  if ((current + w).length > 22) {
                     lines.push(current.trim());
                     current = w + " ";
                   } else {
                     current += w + " ";
                   }
                 });
-                lines.push(current.trim());
+                if (current) lines.push(current.trim());
                 return lines;
              }
              return clean;
@@ -1111,14 +1118,14 @@ export default function App() {
               ticks: { 
                 display: true, 
                 stepSize: 5,
-                font: { size: 12, weight: 700 }, 
+                font: { size: 11, weight: 600 }, 
                 color: '#1e40af',
                 backdropColor: 'rgba(255, 255, 255, 0.75)',
                 callback: (val) => val + "%"
               },
               pointLabels: {
                 font: { 
-                  size: 20, 
+                  size: 14, 
                   weight: 700,
                   family: "'Inter', sans-serif" 
                 }, 
@@ -1204,23 +1211,32 @@ export default function App() {
     if (!molde || excels.length === 0) return;
     
     setIsProcessing(true);
-    addLog(`Iniciando processamento em lote (${excels.length} arquivos)...`);
+    setProcessingStatus(excels.map(f => ({ name: f.name, status: 'waiting' })));
+    addLog(`🚀 Iniciando processamento em lote (${excels.length} arquivos)...`);
 
     try {
       const moldeBuffer = molde.data;
       const meses = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"];
       
       const generatedFiles: { name: string; blob: Blob }[] = [];
-      const allReportData: any[] = []; // para o modo consolidado
+      const allReportData: any[] = []; 
 
       for (let i = 0; i < excels.length; i++) {
         const file = excels[i];
-        addLog(`Processando dados: ${file.name}`);
-        const data = file.data;
-        const workbook = XLSX.read(data, { type: 'array', cellDates: true }); // Enable cellDates
+        setProcessingStatus(prev => prev.map((s, idx) => idx === i ? { ...s, status: 'processing' } : s));
         
-        const sheetName = workbook.SheetNames.find(n => n.toUpperCase().includes('PSICOSSOCIAL')) || workbook.SheetNames[0];
-        const sheet = workbook.Sheets[sheetName];
+        try {
+          addLog(`📄 Lendo arquivo ${i + 1}/${excels.length}: ${file.name}`);
+
+          const data = file.data;
+          const workbook = XLSX.read(data, { type: 'array', cellDates: true });
+          
+          const sheetName = workbook.SheetNames.find(n => n.toUpperCase().includes('PSICOSSOCIAL')) || workbook.SheetNames[0];
+          const sheet = workbook.Sheets[sheetName];
+
+          if (!sheet) {
+            throw new Error(`Aba 'PSICOSSOCIAL' não encontrada no arquivo ${file.name}`);
+          }
 
         // --- Helper Discovery Functions ---
         // Iterate in sorted order to ensure consistent "first match" behavior (top-to-bottom, left-to-right)
@@ -1233,19 +1249,19 @@ export default function App() {
           return ma[1].localeCompare(mb[1]);
         });
 
-        const findCellWith = (txt: string, exactPrioritize = true) => {
-          const target = txt.toUpperCase().trim();
+        const findCellWith = (txt: string | string[], exactPrioritize = true) => {
+          const targets = Array.isArray(txt) ? txt.map(t => t.toUpperCase().trim()) : [txt.toUpperCase().trim()];
           let partialMatch = null;
           
           for (let z of sortedKeys) {
             const cell = sheet[z];
             if (cell && cell.v) {
               const val = String(cell.v).trim().toUpperCase();
-              if (val === target) {
+              if (targets.some(t => val === t)) {
                  const m = z.match(/([A-Z]+)(\d+)/);
                  if (m) return { c: m[1], r: parseInt(m[2]), v: cell.v };
               }
-              if (val.includes(target) && !partialMatch) {
+              if (targets.some(t => val.includes(t)) && !partialMatch) {
                  const m = z.match(/([A-Z]+)(\d+)/);
                  if (m) partialMatch = { c: m[1], r: parseInt(m[2]), v: cell.v };
               }
@@ -1330,16 +1346,15 @@ export default function App() {
         };
 
         // --- Core Info ---
-        // AS PER MAPPING TABLE: PSICOSSOCIAL!E12, N12, E16, F14, E18, K18
         const vEmpresaRaw = sheet['E12']?.v || getValSmart(["EMPRESA", "RAZÃO SOCIAL", "CLIENTE"]) || "NÃO IDENTIFICADO";
-        const vSetorRaw = sheet['E16']?.v || getValSmart(["SETOR", "DEPARTAMENTO"]) || "NÃO IDENTIFICADO";
-        const vUnidadeRaw = sheet['N12']?.v || getValSmart(["UNIDADE", "LOCAL"]) || "";
-        const vCnpjRaw = sheet['F14']?.v || getValSmart("CNPJ") || "";
-        const vAvaliadorRaw = sheet['E18']?.v || getValSmart("AVALIADOR") || "";
+        const vSetorRaw = sheet['E16']?.v || getValSmart(["SETOR", "DEPARTAMENTO", "ÁREA"]) || "NÃO IDENTIFICADO";
+        const vUnidadeRaw = sheet['N12']?.v || getValSmart(["UNIDADE", "LOCAL", "ESTABELECIMENTO"]) || "";
+        const vCnpjRaw = sheet['F14']?.v || getValSmart(["CNPJ", "C.N.P.J."]) || "";
+        const vAvaliadorRaw = sheet['E18']?.v || getValSmart(["AVALIADOR", "RESPONSÁVEL", "ELABORADO POR"]) || "";
         
         addLog(`>> Base: ${vEmpresaRaw} | Setor: ${vSetorRaw}`);
 
-        let rawD = sheet['K18']?.v || sheet['K16']?.v || getValSmart(["DATA", "DATA DA COLETA"]);
+        let rawD = sheet['K18']?.v || sheet['K16']?.v || getValSmart(["DATA", "DATA DA COLETA", "ATUALIZADO EM"]);
         let d = new Date();
         if (rawD instanceof Date) {
           d = rawD;
@@ -1353,16 +1368,15 @@ export default function App() {
         if (!d || d.getFullYear() < 1920) d = new Date(); 
 
         // --- Demografia ---
-        // AS PER MAPPING TABLE: PSICOSSOCIAL!L16, O16, R16, T16
-        const fTot = smartParse(sheet['L16']?.v || getValSmart(["TOTAL DE FUNCIONÁRIOS", "FUNC. TOTAL"], 'number'));
-        const pTot = smartParse(sheet['O16']?.v || getValSmart(["PARTICIPANTES", "PONTUADOS", "TOTAL PARTICIPANTES"], 'number'));
+        const fTot = smartParse(sheet['L16']?.v || getValSmart(["TOTAL DE FUNCIONÁRIOS", "FUNC. TOTAL", "EFETIVOS"], 'number'));
+        const pTot = smartParse(sheet['O16']?.v || getValSmart(["PARTICIPANTES", "PONTUADOS", "TOTAL PARTICIPANTES", "PESSOAS"], 'number'));
         
-        let mN = smartParse(sheet['R16']?.v || getValSmart("HOMENS", 'number') || 0);
-        let wN = smartParse(sheet['T16']?.v || getValSmart("MULHERES", 'number') || 0);
+        let mN = smartParse(sheet['R16']?.v || getValSmart(["HOMENS", "MASCULINO"], 'number') || 0);
+        let wN = smartParse(sheet['T16']?.v || getValSmart(["MULHERES", "FEMININO"], 'number') || 0);
         
         // If the mapping-specific cells are 0, try smart search
         if (mN === 0 && wN === 0) {
-          const hLoc = findCellWith("HOMENS");
+          const hLoc = findCellWith(["HOMENS", "MASCULINO"]);
           if (hLoc) {
             for (let i = 1; i <= 15; i++) {
               const val = sheet[`${XLSX.utils.encode_col(XLSX.utils.decode_col(hLoc.c) + i)}${hLoc.r}`]?.v;
@@ -1372,7 +1386,7 @@ export default function App() {
               }
             }
           }
-          const mLocArr = findCellWith("MULHERES");
+          const mLocArr = findCellWith(["MULHERES", "FEMININO"]);
           if (mLocArr) {
             for (let i = 1; i <= 15; i++) {
               const val = sheet[`${XLSX.utils.encode_col(XLSX.utils.decode_col(mLocArr.c) + i)}${mLocArr.r}`]?.v;
@@ -1384,30 +1398,26 @@ export default function App() {
           }
         }
         
-        if (mN === 0 && wN === 0) {
-           const hAlt = getValSmart("MASCULINO", 'number');
-           const fAlt = getValSmart("FEMININO", 'number');
-           if (hAlt !== null) mN = hAlt;
-           if (fAlt !== null) wN = fAlt;
-        }
-        
         const pPartic = fTot > 0 ? (pTot / fTot * 100) : 0;
         const totalGenero = mN + wN;
         const pMasc = totalGenero > 0 ? (mN / totalGenero * 100) : 0;
         const pFem = totalGenero > 0 ? (wN / totalGenero * 100) : 0;
         
-        addLog(`>> Demografia Final: Partic: ${pTot}/${fTot} (${pPartic.toFixed(1)}%), M: ${mN}, F: ${wN}`);
+        addLog(`>> Demografia: ${pTot}/${fTot} part., M:${mN}, F:${wN}`);
+        if (totalGenero !== pTot && pTot > 0 && totalGenero > 0) {
+          addLog(`⚠️ Divergência: Gêneros (${totalGenero}) ≠ Total Participantes (${pTot})`);
+        }
 
     // --- Exposição Variables (Fórmulas do Excel) ---
     // PASSO 1: Score base de exposição (AA232)
-    const AD301 = smartParse(sheet['AD301']?.v);
-    const AB26 = smartParse(sheet['AB26']?.v);
+    const AD301 = smartParse(sheet['AD301']?.v || getValSmart(["FATOR PASSADO", "AD301"], "number"));
+    const AB26 = smartParse(sheet['AB26']?.v || getValSmart(["NORMALIZAÇÃO", "AB26"], "number"));
     const AA232_bruto = (AD301 === 1.0) ? 1.0 : AB26;
 
     // PASSO 2: Multiplicador de turno (BM248 -> AB40 da aba AVAL GERAL)
     const avalGeralSheetName = workbook.SheetNames.find(n => n.toUpperCase().includes('AVAL GERAL'));
     const avalSheet = avalGeralSheetName ? workbook.Sheets[avalGeralSheetName] : null;
-    const BM248 = smartParse(avalSheet?.['AB40']?.v || 1.0);
+    const BM248 = smartParse(avalSheet?.['AB40']?.v || sheet['BM248']?.v || getValSmart("BM248", "number") || 1.0);
 
     // PASSO 3 & 4: Score final de exposição para a matriz (AA233)
     const AA233_cell_v = (sheet['AA233'] !== undefined && sheet['AA233'].v !== null) ? sheet['AA233'].v : (sheet['P248'] !== undefined ? sheet['P248'].v : undefined);
@@ -1451,20 +1461,27 @@ export default function App() {
 
         // --- Factors / Radar Data ---
         const targetFactors = [
-          "Ambiente físico", "Carga e ritmo", "Jornada", "Sofrimento", "Agressivos", 
-          "Assédio", "Autonomia", "Interpessoal", "Familiar"
+          { key: "Ambiente físico de trabalho e equipamentos", search: ["AMBIENTE FÍSICO", "AMBIENTE FISICO", "EQUIPAMENTOS"] },
+          { key: "Carga e ritmo de trabalho", search: ["CARGA E RITMO", "CARGA E/OU RITMO"] },
+          { key: "Jornada de trabalho", search: ["JORNADA", "DURAÇÃO DO TRABALHO"] },
+          { key: "Contato com sofrimento humano", search: ["SOFRIMENTO HUMANO", "CONTATO COM O SOFRIMENTO"] },
+          { key: "Contato com pessoas agressivas", search: ["CONTATO COM PESSOAS AGRESSIVAS", "PESSOAS AGRESSIVAS"] },
+          { key: "Denúncia de assédio/violência", search: ["DENÚNCIA DE ASSÉDIO", "DENÚNCIA DE ASSEDIO", "ASSÉDIO", "VIOLÊNCIA"] },
+          { key: "Autonomia de decisões e controle", search: ["AUTONOMIA", "CONTROLE DE DECISÕES"] },
+          { key: "Relações interpessoais / Isolamento", search: ["INTERPESSOAL", "RELAÇÕES INTERPESSOAIS", "CONFLITANTE"] },
+          { key: "Equilíbrio entre vida profissional e familiar", search: ["EQUILÍBRIO ENTRE VIDA PROFISSIONAL", "FAMILIAR", "VIDA PROFISSIONAL E FAMILIAR"] }
         ];
         let labels: string[] = [];
         let values: number[] = [];
 
-        // AS PER MAPPING: %GRAFICO -> PSICOSSOCIAL!H277:H285 and I277:I285
+        // Try mapping area first (H277-H285 / I277-I285 is standard for these percentages)
         const ranges = [
           { l: 'H277', v: 'I277' }, { l: 'H278', v: 'I278' }, { l: 'H279', v: 'I279' },
           { l: 'H280', v: 'I280' }, { l: 'H281', v: 'I281' }, { l: 'H282', v: 'I282' },
           { l: 'H283', v: 'I283' }, { l: 'H284', v: 'I284' }, { l: 'H285', v: 'I285' }
         ];
 
-        ranges.forEach(range => {
+        ranges.forEach((range, idx) => {
           const lCell = sheet[range.l];
           const vCell = sheet[range.v];
           if (lCell && lCell.v) {
@@ -1472,78 +1489,68 @@ export default function App() {
             let val = smartParse(vCell?.v);
             if (val > 0 && val <= 1.05) val *= 100;
             values.push(Math.round(val));
+          } else {
+            // Placeholder label if mapping fails but we want to keep the slot
+            labels.push(targetFactors[idx]?.key || "Fator " + (idx + 1));
+            values.push(0);
           }
         });
 
-        // Fallback search if the mapping area was empty or moved slightly
-        if (labels.length === 0) {
-          const factAnchor = findCellWith("PONTUAÇÃO POR FATOR") || findCellWith("QUADRO DE EXPOSIÇÃO");
+        // Fallback search ONLY if everything is zero or we missed labels
+        if (values.every(v => v === 0)) {
+          const currentLabels = [...labels];
+          const currentValues = [...values];
           
-          if (factAnchor) {
-            const startR = factAnchor.r;
-            const searchRange = 60; 
+          labels = [];
+          values = [];
+          const factAnchor = findCellWith(["PONTUAÇÃO POR FATOR", "QUADRO DE EXPOSIÇÃO", "FATOR DE EXPOSIÇÃO"]);
+          const startR = factAnchor ? factAnchor.r : 200;
+          
+          for (const factor of targetFactors) {
+            let foundVal = 0;
+            let foundLabel = factor.key;
+            let ok = false;
             
-            targetFactors.forEach(factor => {
-              let foundVal = 0;
-              let foundLabel = factor;
-              let ok = false;
+            for (let r = startR - 10; r < startR + 100; r++) {
+              if (r < 1) continue;
+              const cellA = String(sheet[`A${r}`]?.v || "").toUpperCase();
+              const cellB = String(sheet[`B${r}`]?.v || "").toUpperCase();
+              const cellC = String(sheet[`C${r}`]?.v || "").toUpperCase();
+              const cellH = String(sheet[`H${r}`]?.v || "").toUpperCase();
               
-              for (let r = startR; r < startR + searchRange; r++) {
-                if (r < 1) continue;
-                const cA = sheet[`A${r}`]?.v;
-                const cAnchor = sheet[`${factAnchor.c}${r}`]?.v;
-                const cellVal = String(cAnchor || cA || "").toUpperCase();
-                
-                if (cellVal.includes(factor.toUpperCase())) {
-                  foundLabel = String(cAnchor || cA).trim();
-                  for (let i = 1; i <= 30; i++) {
-                    const col = XLSX.utils.encode_col(XLSX.utils.decode_col(factAnchor.c) + i);
-                    const v = sheet[`${col}${r}`]?.v;
-                    if (v !== undefined && v !== null && v !== "" && String(v).toUpperCase() !== "X" && String(v).toUpperCase() !== "V") {
-                      let parsed = smartParse(v);
-                      if ((typeof v === 'number' && v <= 1.01 && v >= 0) || String(v).includes("%")) {
-                         if (parsed > 0 && parsed <= 1.05) parsed *= 100;
-                         foundVal = Math.round(parsed);
-                         ok = true;
-                         break;
-                      }
-                    }
+              const match = (val: string) => factor.search.some(s => val.includes(s)) && val.length < 80;
+
+              if (match(cellA) || match(cellB) || match(cellC) || match(cellH)) {
+                foundLabel = String(sheet[`A${r}`]?.v || sheet[`B${r}`]?.v || sheet[`C${r}`]?.v || sheet[`H${r}`]?.v).trim();
+                // Look for the percentage to the right
+                const startCol = match(cellH) ? 'H' : (match(cellC) ? 'C' : (match(cellB) ? 'B' : 'A'));
+                for (let i = 1; i <= 30; i++) {
+                  const col = XLSX.utils.encode_col(XLSX.utils.decode_col(startCol) + i);
+                  const v = sheet[`${col}${r}`]?.v;
+                  if (v !== undefined && v !== null && v !== "" && String(v).toUpperCase() !== "X") {
+                    let parsed = smartParse(v);
+                    if (parsed > 0 && parsed <= 1.05) parsed *= 100;
+                    foundVal = Math.round(parsed);
+                    ok = true;
+                    break;
                   }
-                  if (ok) break;
                 }
+                if (ok) break;
               }
-              labels.push(foundLabel);
-              values.push(foundVal);
-            });
+            }
+            labels.push(foundLabel);
+            values.push(foundVal);
+          }
+
+          // If fallback found nothing better than initial mapping, revert to mapping
+          if (values.every(v => v === 0) && currentValues.length > 0) {
+            labels = currentLabels;
+            values = currentValues;
           }
         }
         
-        addLog(`>> Radar Values: ${values.join(', ')}`);
-        
-        // If still empty, try widespread fallback
-        if (labels.length === 0 || values.every(v => v === 0)) {
-           labels.length = 0;
-           values.length = 0;
-           targetFactors.forEach(factor => {
-             const loc = findCellWith(factor, false);
-             if (loc) {
-               labels.push(String(loc.v).trim());
-               let foundVal = 0;
-               for (let i = 1; i <= 12; i++) {
-                 const col = XLSX.utils.encode_col(XLSX.utils.decode_col(loc.c) + i);
-                 const v = sheet[`${col}${loc.r}`]?.v;
-                 if (v !== undefined && v !== null && v !== "") {
-                   foundVal = smartParse(v);
-                   if (foundVal !== 0 || v === 0 || v === "0") break;
-                 }
-               }
-               const finalVal = foundVal > 0 && foundVal <= 1.05 ? foundVal * 100 : foundVal;
-               values.push(finalVal);
-             }
-           });
-        }
-        
         addLog(`>> Fatores encontrados: ${labels.length}/9`);
+        if (values.every(v => v === 0)) addLog("ℹ️ Radar zerado (conforme Excel).");
 
         const extraData: any = {};
         
@@ -1677,23 +1684,31 @@ export default function App() {
         }
 
         // --- Cenários Críticos (Dynamic Mapping) ---
-        const critMapping = [
-          [null,  null,  null ],  // fator 1 — sempre vazio
-          [sheet['L293']?.v ?? null, sheet['M293']?.v ?? null, sheet['N293']?.v ?? null],  // fator 2
-          [null,  null,  null ],  // fator 3 — sempre vazio
-          [sheet['L295']?.v ?? null, null, null],  // fator 4
-          [null,  sheet['M296']?.v ?? null, null],  // fator 5
-          [null,  null,  null ],  // fator 6 — sempre vazio
-          [null,  null,  sheet['N298']?.v ?? null],  // fator 7
-          [null,  null,  sheet['N299']?.v ?? null],  // fator 8
-          [null,  null,  null ],  // fator 9 — sempre vazio
-        ];
+        const dynamicCritMapping: (number | null)[][] = Array.from({ length: 9 }, () => [null, null, null]);
+        for (let l = 1; l <= 9; l++) {
+          for (let c = 1; c <= 3; c++) {
+            const valStr = extraData[`C${c}_L${l}`];
+            if (valStr === "1") dynamicCritMapping[l-1][c-1] = 1;
+            else if (valStr === "0") dynamicCritMapping[l-1][c-1] = 0;
+          }
+        }
 
-        const critTotais = [
-          sheet['L301']?.v ?? 0,
-          sheet['M301']?.v ?? 0,
-          sheet['N301']?.v ?? 0
+        const critMapping = dynamicCritMapping;
+
+        const critTotais: number[] = [
+          parseInt(extraData['C1_SIT']) || 0,
+          parseInt(extraData['C2_SIT']) || 0,
+          parseInt(extraData['C3_SIT']) || 0
         ];
+        
+        // Recalcular totais se vierem zerados
+        if (critTotais[0] === 0 && critTotais[1] === 0 && critTotais[2] === 0) {
+           for (let c = 0; c < 3; c++) {
+              let s = 0;
+              for (let r = 0; r < 9; r++) if (critMapping[r][c] === 1) s++;
+              critTotais[c] = s;
+           }
+        }
 
         const critB64 = await generateCriticosBase64(critMapping, critTotais);
         const matrixB64 = await generateMatrixBase64(currentDanoScore, currentAA233);
@@ -1779,12 +1794,22 @@ export default function App() {
         const fileName = `Relatório Psicossocial_${reportData.EMPRESA}_${reportData.UNIDADE}_${reportData.SETOR}_${d.getDate().toString().padStart(2,'0')}_${(d.getMonth()+1).toString().padStart(2,'0')}_${d.getFullYear()}`.replace(/[\/\\?%*:|"<>]/g, '_');
         
         allReportData.push(reportData); // guardar para modo consolidado
-        addLog(`Compilando: ${reportData.SETOR}`);
-        const reportBlob = await renderDocument(moldeBuffer, reportData);
-        generatedFiles.push({ name: `${fileName}.docx`, blob: reportBlob });
+        
+          if (modoGeracao === 'individual') {
+            addLog(`🔨 Compilando documento Word: ${reportData.SETOR}`);
+            const reportBlob = await renderDocument(moldeBuffer, reportData);
+            generatedFiles.push({ name: `${fileName}.docx`, blob: reportBlob });
+          }
+          setProcessingStatus(prev => prev.map((s, idx) => idx === i ? { ...s, status: 'completed' } : s));
+        } catch (err: any) {
+          setProcessingStatus(prev => prev.map((s, idx) => idx === i ? { ...s, status: 'error' } : s));
+          addLog(`⚠️ Erro ao processar arquivo ${file.name}: ${err.message}`);
+          console.error(`Erro no arquivo ${file.name}:`, err);
+          // Continua para o próximo arquivo no modo lote
+        }
       }
 
-      if (modoGeracao === 'consolidado' && generatedFiles.length > 1) {
+      if (modoGeracao === 'consolidado' && allReportData.length > 0) {
         // Agrupar por empresa e gerar 1 docx por empresa
         addLog('Agrupando setores por empresa...');
 
@@ -1833,10 +1858,54 @@ export default function App() {
           EXP_INTRINSECA:   first.EXP_INTRINSECA,
           EXP_SOBRECARGA:   first.EXP_SOBRECARGA,
           CONCLUSOES_LISTA: first.CONCLUSOES_LISTA,
-          setores:          setores
+          setores:          setores.map(s => ({
+            ...s,
+            // Ensure all possible tag variations are included for maximum compatibility
+            headerImage:  s.INFO_HEADER || s.headerImage,
+            INFO_HEADER:  s.INFO_HEADER || s.headerImage,
+            radarImage:   s.GRAFICO || s.radarImage || s.RADAR,
+            GRAFICO:      s.GRAFICO || s.radarImage || s.RADAR,
+            RADAR:        s.GRAFICO || s.radarImage || s.RADAR,
+            matrixImage:  s.MATRIZ_RISCO || s.matrixImage,
+            MATRIZ_RISCO: s.MATRIZ_RISCO || s.matrixImage,
+            criticosImage: s.TABELA_CRITICOS || s.criticosImage,
+            TABELA_CRITICOS: s.TABELA_CRITICOS || s.criticosImage
+          })),
+          // Also providing uppercase version of the array for versatility
+          SETORES: setores.map(s => ({
+            ...s,
+            headerImage:  s.INFO_HEADER || s.headerImage,
+            INFO_HEADER:  s.INFO_HEADER || s.headerImage,
+            radarImage:   s.GRAFICO || s.radarImage || s.RADAR,
+            GRAFICO:      s.GRAFICO || s.radarImage || s.RADAR,
+            RADAR:        s.GRAFICO || s.radarImage || s.RADAR,
+            matrixImage:  s.MATRIZ_RISCO || s.matrixImage,
+            MATRIZ_RISCO: s.MATRIZ_RISCO || s.matrixImage,
+            criticosImage: s.TABELA_CRITICOS || s.criticosImage,
+            TABELA_CRITICOS: s.TABELA_CRITICOS || s.criticosImage
+          }))
         };
 
-          const blob = await renderDocument(moldeBuffer, consolidadoData);
+        // Generate Consolidated Header Image (Aggregated)
+        const consolidatedHeaderB64 = await generateHeaderBase64({
+          EMPRESA: consolidadoData.EMPRESA,
+          UNIDADE: consolidadoData.UNIDADE,
+          SETOR: "CONSOLIDADO / TODOS OS SETORES",
+          DATA: consolidadoData.DATA,
+          AVALIADOR: consolidadoData.AVALIADOR,
+          FUNC_TOTAL: consolidadoData.FUNC_TOTAL,
+          PARTIC_TOTAL: consolidadoData.PARTIC_TOTAL,
+          MASC_N: consolidadoData.MASC_N,
+          FEM_N: consolidadoData.FEM_N,
+          PERC_PARTIC: consolidadoData.PERC_PARTIC
+        });
+
+        Object.assign(consolidadoData, {
+          headerImage: consolidatedHeaderB64,
+          INFO_HEADER: consolidatedHeaderB64
+        });
+
+        const blob = await renderDocument(moldeBuffer, consolidadoData);
           const d = new Date();
           consolidadoFiles.push({
             name: `Relatório_Consolidado_${empresa}_${d.getDate().toString().padStart(2,'0')}_${(d.getMonth()+1).toString().padStart(2,'0')}_${d.getFullYear()}.docx`.replace(/[\/\\?%*:|"<>]/g, '_'),
@@ -1855,19 +1924,23 @@ export default function App() {
           addLog(`✅ ${consolidadoFiles.length} relatórios consolidados salvos em ZIP.`);
         }
 
-      } else if (generatedFiles.length === 1) {
-        saveAs(generatedFiles[0].blob, generatedFiles[0].name);
-        addLog(`✅ Relatório salvo: ${generatedFiles[0].name}`);
-      } else if (generatedFiles.length > 1) {
-        addLog(`Empacotando ${generatedFiles.length} arquivos em um ZIP...`);
-        const zip = new JSZip();
-        generatedFiles.forEach(f => zip.file(f.name, f.blob));
-        const zipBlob = await zip.generateAsync({ type: 'blob' });
-        saveAs(zipBlob, `Relatorios_Psicossociais_Lote_${new Date().getTime()}.zip`);
-        addLog(`✅ Pacote ZIP salvo com sucesso.`);
+      } else if (generatedFiles.length > 0) {
+        if (generatedFiles.length === 1) {
+          saveAs(generatedFiles[0].blob, generatedFiles[0].name);
+          addLog(`✅ Relatório salvo: ${generatedFiles[0].name}`);
+        } else {
+          addLog(`📦 Empacotando ${generatedFiles.length} arquivos em um ZIP...`);
+          const zip = new JSZip();
+          generatedFiles.forEach(f => zip.file(f.name, f.blob));
+          const zipBlob = await zip.generateAsync({ type: 'blob' });
+          saveAs(zipBlob, `Relatorios_Psicossociais_Lote_${new Date().getTime()}.zip`);
+          addLog(`✅ Pacote ZIP salvo com sucesso.`);
+        }
+      } else if (allReportData.length === 0) {
+        addLog('⚠️ Nenhum dado válido foi extraído das planilhas.');
       }
 
-      addLog('Processamento concluído.');
+      addLog('🏁 Processamento concluído.');
     } catch (err: any) {
       addLog(`❌ ERRO CRÍTICO: ${err.message}`);
       console.error(err);
@@ -1889,11 +1962,16 @@ export default function App() {
         return bytes.buffer;
       },
       getSize: (img: any, tagValue: string, tagName: string) => {
-        if (tagName === 'INFO_HEADER' || tagName === 'headerImage') return [650, 122]; // Updated for 1600x300 ratio
-        if (tagName === 'TABELA_CRITICOS' || tagName === 'criticosImage') return [650, 450]; // 1100x760 ratio
-        if (tagName === 'MATRIZ_RISCO' || tagName === 'matrixImage') return [620, 400];
-        if (tagName === 'chartImage' || tagName === 'RADAR') return [652, 473]; // 17.25cm x 12.53cm
-        if (tagName === 'TABELA_RESUMO_EXPOSICAO' || tagName === 'TABELA_EXPOSICAO' || tagName === 'TABELA_RESUMO' || tagName === 'IMAGEM_EXPOSICAO') return [652, 244]; // 17.25cm x 6.46cm
+        // INFO_HEADER: ~17cm x 3.2cm
+        if (tagName === 'INFO_HEADER' || tagName === 'headerImage') return [650, 122]; 
+        // TABELA_CRITICOS: ~14.4cm x 9.7cm (from screenshot 14.36 x 9.72)
+        if (tagName === 'TABELA_CRITICOS' || tagName === 'criticosImage') return [543, 367]; 
+        // MATRIZ_RISCO: ~14.0cm x 6.5cm (from screenshot 13.99 x 6.54)
+        if (tagName === 'MATRIZ_RISCO' || tagName === 'matrixImage') return [529, 247];
+        // RADAR: Standard chart size
+        if (tagName === 'chartImage' || tagName === 'RADAR' || tagName === 'GRAFICO' || tagName === 'radarImage') return [652, 473]; 
+        // Exposure Tables
+        if (tagName === 'TABELA_RESUMO_EXPOSICAO' || tagName === 'TABELA_EXPOSICAO' || tagName === 'TABELA_RESUMO' || tagName === 'IMAGEM_EXPOSICAO') return [652, 244]; 
         return [652, 500];
       }
     };
@@ -1905,12 +1983,26 @@ export default function App() {
       nullGetter: () => ""
     });
 
-    doc.render(dataObj);
+    try {
+      doc.render(dataObj);
+    } catch (error: any) {
+      if (error.properties && error.properties.errors instanceof Array) {
+        const errorMessages = error.properties.errors.map((e: any) => e.message).join(' | ');
+        throw new Error(`Erro de Tags no Word: ${errorMessages}`);
+      }
+      throw error;
+    }
     
+    addLog(`✅ Documento renderizado com sucesso.`);
     return doc.getZip().generate({ 
       type: "blob", 
       mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" 
     });
+  };
+
+  const removeExcel = (index: number) => {
+    setExcels(prev => prev.filter((_, i) => i !== index));
+    addLog('Arquivo Excel removido.');
   };
 
   return (
@@ -1928,11 +2020,8 @@ export default function App() {
             <FileText className="w-10 h-10 text-white" />
           </motion.div>
           <h1 className="text-4xl font-extrabold text-slate-900 mb-3 tracking-tight">
-            Gerador de Relatórios INSAT
+            Gerador de Relatório Psicossocial
           </h1>
-          <p className="text-slate-500 text-lg max-w-xl mx-auto">
-            Geração profissional de documentos técnicos com gráficos psicossociais automáticos.
-          </p>
         </header>
 
         {/* Step settings */}
@@ -1941,20 +2030,29 @@ export default function App() {
           animate={{ y: 0, opacity: 1 }}
           className="flex justify-center mb-10"
         >
-          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
-            <div className="flex flex-col">
-              <span className="text-sm font-bold text-slate-700">Plano de Ação?</span>
-              <span className="text-xs text-slate-500">Incluir seção extra no relatório</span>
+          <div 
+            onClick={() => setIncludePlano(!includePlano)}
+            className={`
+              cursor-pointer group flex items-center gap-6 p-5 rounded-[2rem] border-2 transition-all w-full max-w-sm
+              ${includePlano ? 'bg-blue-600 border-blue-600 shadow-lg shadow-blue-200' : 'bg-white border-slate-200 hover:border-blue-300'}
+            `}
+          >
+            <div className={`p-4 rounded-2xl transition-colors ${includePlano ? 'bg-white/20' : 'bg-blue-50'}`}>
+              <CheckCircle2 className={`w-8 h-8 ${includePlano ? 'text-white' : 'text-blue-600'}`} />
             </div>
-            <button 
-              onClick={() => setIncludePlano(!includePlano)}
-              className={`
-                relative inline-flex h-7 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none
-                ${includePlano ? 'bg-blue-600' : 'bg-slate-300'}
-              `}
-            >
-              <span className={`pointer-events-none inline-block h-6 w-6 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${includePlano ? 'translate-x-7' : 'translate-x-0'}`} />
-            </button>
+            <div className="flex-1">
+              <h3 className={`font-black text-lg ${includePlano ? 'text-white' : 'text-slate-800'}`}>Plano de Ação</h3>
+              <p className={`text-xs ${includePlano ? 'text-blue-100' : 'text-slate-500'}`}>Incluir recomendações técnicas automáticas no relatório.</p>
+            </div>
+            <div className={`
+              w-12 h-6 rounded-full relative transition-colors border-2
+              ${includePlano ? 'bg-blue-400 border-white/30' : 'bg-slate-200 border-transparent'}
+            `}>
+              <motion.div 
+                animate={{ x: includePlano ? 24 : 2 }}
+                className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm"
+              />
+            </div>
           </div>
         </motion.div>
 
@@ -2077,6 +2175,26 @@ export default function App() {
                 {!excels.length && <p className="text-xs text-slate-400 mt-1">Os dados serão extraídos automaticamente</p>}
               </div>
             </div>
+
+            {/* List of uploaded Excels */}
+            {excels.length > 0 && (
+              <div className="mt-4 space-y-2 max-h-40 overflow-y-auto pr-2 custom-scrollbar">
+                {excels.map((file, idx) => (
+                  <div key={idx} className="flex items-center justify-between bg-slate-50 p-2 rounded-xl border border-slate-100 group">
+                    <div className="flex items-center gap-2 overflow-hidden">
+                      <FileSpreadsheet className="w-4 h-4 text-emerald-500 flex-shrink-0" />
+                      <span className="text-xs font-medium truncate text-slate-600">{file.name}</span>
+                    </div>
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); removeExcel(idx); }}
+                      className="text-[10px] font-bold text-slate-400 hover:text-rose-500 transition-colors uppercase px-2"
+                    >
+                      Remover
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </section>
         </div>
 
@@ -2102,21 +2220,98 @@ export default function App() {
                 </>
               ) : (
                 <>
-                  GERAR RELATÓRIOS AUTOMATICAMENTE
+                  {modoGeracao === 'consolidado' ? 'GERAR RELATÓRIO CONSOLIDADO' : 'GERAR RELATÓRIOS INDIVIDUAIS'}
                   <ArrowRight className="w-6 h-6" />
                 </>
               )}
             </button>
+            <div className="mt-3 flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full ${modoGeracao === 'consolidado' ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`}></div>
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">
+                Modo selecionado: {modoGeracao === 'consolidado' ? 'Consolidação por Empresa' : 'Arquivos Individuais'}
+              </span>
+            </div>
             <AnimatePresence>
               {isProcessing && (
                 <motion.div 
                   initial={{ height: 0, opacity: 0 }}
                   animate={{ height: 'auto', opacity: 1 }}
                   exit={{ height: 0, opacity: 0 }}
-                  className="mt-6 flex items-center justify-center gap-3 text-blue-600 font-bold overflow-hidden"
+                  className="mt-8 overflow-hidden"
                 >
-                  <Info className="w-5 h-5" />
-                  <p>Lendo planilhas e desenhando gráficos...</p>
+                  {/* Dashboard Header - Minimalist & High Impact */}
+                  <div className="bg-white rounded-3xl border border-slate-200 shadow-xl shadow-slate-200/50 p-6">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+                      <div className="flex items-center gap-5">
+                        <div className="relative">
+                          <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-200 rotate-3">
+                            <FileText className="w-8 h-8 text-white -rotate-3" />
+                          </div>
+                          <div className="absolute -bottom-1 -right-1 w-6 h-6 bg-emerald-500 rounded-lg border-2 border-white flex items-center justify-center">
+                            <span className="text-[10px] font-black text-white">
+                              {processingStatus.filter(s => s.status === 'completed').length}
+                            </span>
+                          </div>
+                        </div>
+                        <div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="px-2 py-0.5 bg-blue-50 text-blue-600 text-[9px] font-black uppercase tracking-widest rounded-md border border-blue-100 italic">
+                            Live Engine
+                          </span>
+                        </div>
+                        <h4 className="text-xl font-black text-slate-800 tracking-tight">
+                          Gerando <span className="text-blue-600">
+                            {processingStatus.filter(s => s.status === 'completed').length}
+                          </span> de {processingStatus.length}
+                        </h4>
+                        <div className="flex items-center gap-2">
+                          <Loader2 className="w-3 h-3 text-blue-500 animate-spin" />
+                          <p className="text-xs text-slate-400 font-medium truncate max-w-[180px]">
+                            {processingStatus.find(s => s.status === 'processing')?.name || "Processamento em Lote..."}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex-1 max-w-[280px]">
+                      <div className="flex justify-between items-end mb-2">
+                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Progresso Total</span>
+                        <span className="text-xs font-black text-blue-600 bg-blue-50 px-2 py-0.5 rounded-lg border border-blue-100">
+                          {Math.round((processingStatus.filter(s => s.status === 'completed').length / processingStatus.length) * 100)}%
+                        </span>
+                      </div>
+                      <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden p-0.5 border border-slate-50">
+                        <motion.div 
+                          initial={{ width: 0 }}
+                          animate={{ 
+                            width: `${(processingStatus.filter(s => s.status === 'completed').length / processingStatus.length) * 100}%` 
+                          }}
+                          className="h-full bg-gradient-to-r from-blue-600 to-indigo-600 rounded-full shadow-sm"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* High-End Grid View - Compact Particles */}
+                  <div className="mt-8 flex flex-wrap gap-2 justify-center">
+                    {processingStatus.map((item, idx) => (
+                      <motion.div 
+                        key={idx}
+                        title={item.name}
+                        initial={{ scale: 0.8, opacity: 0 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        transition={{ delay: Math.min(idx * 0.02, 0.5) }}
+                        className={`
+                          w-3 h-3 rounded-md transition-all duration-700
+                          ${item.status === 'completed' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.3)]' : 
+                            item.status === 'processing' ? 'bg-blue-600 animate-pulse shadow-[0_0_12px_rgba(37,99,235,0.5)] scale-125 z-10' : 
+                            item.status === 'error' ? 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.3)]' : 
+                            'bg-slate-200 border border-slate-300 opacity-40'}
+                        `}
+                      />
+                    ))}
+                  </div>
+                </div>
                 </motion.div>
               )}
             </AnimatePresence>
@@ -2135,6 +2330,12 @@ export default function App() {
               <Terminal className="w-3 h-3" />
               <span>TERMINAL_INSAT_v2.0</span>
             </div>
+            <button 
+              onClick={clearLogs}
+              className="ml-auto text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-400 px-2 py-1 rounded transition-colors border border-slate-700"
+            >
+              LIMPAR TERMINAL
+            </button>
           </div>
           
           <div className="max-h-64 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-700 pr-2">
@@ -2151,12 +2352,11 @@ export default function App() {
                   className="flex gap-4 group"
                 >
                   <span className="text-slate-600 select-none group-hover:text-slate-400 transition-colors">[{log.timestamp}]</span>
-                  <span className={log.message.startsWith('✅') ? 'text-emerald-300' : log.message.startsWith('❌') ? 'text-rose-400' : 'text-emerald-400/90'}>
+                  <span className={log.message.startsWith('✅') ? 'text-emerald-300' : log.message.startsWith('⚠️') ? 'text-amber-300' : log.message.startsWith('🚀') ? 'text-blue-300 font-bold' : 'text-emerald-400/90'}>
                     {log.message}
                   </span>
                 </motion.div>
               ))}
-              <div ref={logEndRef} />
             </div>
           </div>
         </section>
